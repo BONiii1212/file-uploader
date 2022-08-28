@@ -1,17 +1,6 @@
-const UPLOAD_INFO = {
-    'NO_FILE':'请先选择文件',
-    'INVALID_TYPE':'不支持该类型文件上传',
-    'UPLOAD_FAILED':'上传失败',
-    'UPLOAD_SUCCESS':'上传成功'
-}
-const ALLOWED_TYPE = {
-    'video/mp4':'mp4',
-    'video/ogg':'ogg',
-}
-const CHUNK_SIZE = 64 * 1024
-const API = {
-    UPLOAD:'http://127.0.0.1:8000/uploadFile'
-}
+import calculateFileMd5 from "./calculateMd5";
+import {UPLOAD_INFO, CHUNK_SIZE, API} from "./constant"
+import {createFormData, limitPool, setUploadedToStorage, checkFileSlice, getFileType} from './utils'
 
 ;((doc)=>{
     const oProgress = doc.querySelector('#uploadProgress');
@@ -27,7 +16,10 @@ const API = {
         oBtn.addEventListener('click', uploadFile, false);
     }
 
-    function uploadFile() {
+    /* 
+    * 大文件上传方法
+    */
+    async function uploadFile() {
         // 获取input中的文件
         const file = oUploader.files[0]
         // 文件判空
@@ -35,91 +27,68 @@ const API = {
             oInfo.innerText = UPLOAD_INFO['NO_FILE'];
             return
         }
-        // 文件类型检测
-        if(!ALLOWED_TYPE[file.type]){
-            oInfo.innerText = UPLOAD_INFO['INVALID_TYPE'];
-            return
-        }
         oInfo.innerText = ''
-        const {name, type, size} = file
-        // 保存chunk块
+        const {name, size} = file
+
+        let fileType = getFileType(name)
+        const md5 = await calculateFileMd5(file, CHUNK_SIZE)
+
+        oProgress.max = 0
+
+        // 当前上传大小
+        let start = 0
+        // 将文件进行切块
         let chunks = []
-        let token = (+new Date())
-        oProgress.max = size
-
-        //当前上传大小
-        let uploadedSize = 0
-
-        // 需要进行文件拆分
-        if(size > CHUNK_SIZE){
-            while(uploadedSize < size){
-                const fileChunk = file.slice(uploadedSize, uploadedSize + CHUNK_SIZE)
-                chunks.push(fileChunk)
-                uploadedSize += fileChunk.size
-            }
-        }else{
-            chunks.push(file.slice(0))
+        while(start < size){
+            const fileChunk = file.slice(start, start + CHUNK_SIZE)
+            chunks.push(fileChunk)
+            start += fileChunk.size
         }
 
-        // 分片的数量
-        let chunkCount = chunks.length
+        // 将分片封装成formData格式
         let dataArr = []
-        for(let i = 0; i<chunkCount; i++){
+        for(let i = 0; i<chunks.length; i++){
             const formData = createFormData({
+                process:'upload',
                 index:i,
-                type,
-                token,
-                file:chunks[i]
-            })    
-            dataArr.push(formData)
+                type:fileType,
+                md5,
+                file:chunks[i],
+                size:chunks[i].size
+            })
+            // 断点续传的功能  
+            // 如果没有的话，添加到dataArr中
+            if(!checkFileSlice(md5, i)){
+                dataArr.push(formData)
+                // 记录总的进度条value
+                oProgress.value = oProgress.value + chunks[i].size
+            }    
         }
-
+        console.log(dataArr)
+        // 调用并行池，并发控制请求发送，在全部成功后，发送合并请求
         limitPool(1, dataArr, createAxios).then(res=>{
-            const fd = new FormData()
-            fd.append('type', 'merge')
-            fd.append('token',token)
-            fd.append('chunkCount', chunkCount)
-            fd.append('filename', name)
+            const formData = createFormData({
+                process:'merge',
+                type:fileType,
+                md5,
+                chunkCount:chunks.length
+            })
             oInfo.innerText = UPLOAD_INFO['UPLOAD_SUCCESS']
             oUploader.value = null
-            return axios.post(API.UPLOAD, fd)
+            return axios.post(API.UPLOAD, formData)
         },rej=>{
             oInfo.innerText = UPLOAD_INFO['UPLOAD_FAILED']
             return
-        }).then(()=>console.log('success'))
+        }).then(()=>console.log('merge success'))
+
+        // 将data生成请求
+        function createAxios(data){
+            return axios.post(API.UPLOAD, data).then(res => {
+                oProgress.value = oProgress.value + res.data.size
+                setUploadedToStorage(md5, res.data.index)
+            })
+        }
     }
 
-    function createFormData ({
-        index,
-        type,
-        token,
-        file
-    }){
-        const fd = new FormData()
-        fd.append('index', index)
-        fd.append('type',type)
-        fd.append('token',token)
-        fd.append('file', file)
-        return fd
-    }
-    function createAxios(data){
-        return axios.post(API.UPLOAD, data).then(()=>oProgress.value = oProgress.value + CHUNK_SIZE)
-    }
-    async function limitPool(limitNum, dataArr, Fun){
-        let result = []
-        let executing = []
-        for(let data of dataArr){
-            let p = Promise.resolve(Fun(data))
-            result.push(p)
-            if(limitNum<dataArr){
-                let e = p.then(()=>executing.splice(executing.indexOf(e), 1))
-                executing.push(e)
-                if(executing.length>=limitNum){
-                    await Promise.race(executing)
-                }
-            }
-        }
-        return Promise.all(result)
-    }
     init();
 })(document);

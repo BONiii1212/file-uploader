@@ -1,20 +1,13 @@
 const express = require('express')
 const bodyParser = require('body-parser') 
 const uploader = require('express-fileupload')
-const { extname,resolve } = require('path')
+const { resolve } = require('path')
 const {
-    existsSync,
-    appendFileSync,
     writeFileSync,
     createWriteStream,
     createReadStream,
     unlink
 } = require('fs')
-
-const ALLOWED_TYPE = {
-    'video/mp4':'mp4',
-    'video/ogg':'ogg',
-}
 
 const app = express()
 
@@ -33,18 +26,19 @@ app.all('*', (req, res, next) => {
 
 app.post('/uploadFile',(req, res)=>{
     const {
-        type,
+        process,
         index,
-        token,
+        type,
+        md5,
         chunkCount,
-        filename,
+        size,
     } = req.body
-    if(type == 'merge'){
-        const filePath = resolve(__dirname,'./upload/'+token+'_'+filename)
+    if(process == 'merge'){
+        const filePath = resolve(__dirname,'./upload/'+md5+'.'+type)
         let writeStream = createWriteStream(filePath)
-        let cindex = 0
+        let s_index = 0
         function fnMergeFile(){
-            let fname = resolve(__dirname,'./upload_temp/'+token+'_'+cindex+'.mp4')
+            let fname = resolve(__dirname,'./upload_temp/'+md5+'_'+s_index+'.'+type)
             let readStream = createReadStream(fname)
             readStream.pipe(writeStream, {end: false})
             readStream.on("end",function(){
@@ -53,8 +47,8 @@ app.post('/uploadFile',(req, res)=>{
                         throw err
                     }
                 })
-                if(cindex+1 < chunkCount){
-                    cindex += 1
+                if(s_index+1 < chunkCount){
+                    s_index += 1
                     fnMergeFile()
                 }
             })
@@ -62,9 +56,9 @@ app.post('/uploadFile',(req, res)=>{
         fnMergeFile()
         res.send({
             code:0,
-            msg:'File is 合并了'
+            msg:'文件合并成功了'
         })
-    }else{
+    }else if(process == 'upload'){
         const { file } = req.files
         if(!file){
             res.send({
@@ -73,42 +67,16 @@ app.post('/uploadFile',(req, res)=>{
             });
             return
         }
-        if(!ALLOWED_TYPE[type]){
-            res.send({
-                code:1002,
-                msg:'The type is not allowed for uploading'
-            })
-            return
-        }
-        const filePath = resolve(__dirname,'./upload_temp/'+token+'_'+index+'.'+ALLOWED_TYPE[type])
+        const filePath = resolve(__dirname,'./upload_temp/'+md5+'_'+index+'.'+type)
         writeFileSync(filePath, file.data)
         res.send({
             code:0,
-            msg:'success',
+            index: index,
+            size: size,
+            msg:'文件片上传成功',
         })
         return
     }
-    // const filePath = resolve(__dirname,'./upload_temp/'+fileName)
-    // if(Number(uploadedSize) !== 0){
-    //     if(!existsSync(filePath)){
-    //         res.send({
-    //             code:1003,
-    //             msg:'The file is not exist'
-    //         })
-    //         return
-    //     }
-    //     appendFileSync(filePath, file.data)
-
-    //     res.send({
-    //         code:0,
-    //         msg:'Appended',
-    //         data: {
-    //             url: 'http://localhost:8000/'+fileName
-    //         }
-    //     })
-    //     return
-    // }
-    // writeFileSync(filePath,file.data)
 })
 
 app.listen(PORT,()=>{
